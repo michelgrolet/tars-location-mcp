@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of what the README promises. The schema uses window functions, lateral
+        # joins and materialized views, and "works on 16" says nothing about 14.
+        include:
+          - python: "3.10"
+            postgres: "14"
+          - python: "3.13"
+            postgres: "16"
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      LOCATION_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      # The schema tests skip themselves when no database is reachable, which is right on a
+      # laptop and useless here: a green run that skipped them proves nothing about the
+      # migration. Fail on any skip rather than trusting the connection string was picked up.
+      - name: Tests, and prove the schema ones ran
+        run: |
+          set -o pipefail
+          pytest -q --tb=short | tee /tmp/pytest.out
+          if grep -qi 'skipped' /tmp/pytest.out; then
+            echo "::error::schema tests skipped, so the migration was never applied"
+            exit 1
+          fi

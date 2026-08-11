@@ -1,0 +1,51 @@
+[project]
+name = "tars-location-mcp"
+version = "0.1.0"
+description = "A private location archive with an MCP server: where you were, when, for how long, and who with."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Michel Grolet", email = "michelgrolet@users.noreply.github.com" }]
+keywords = ["location", "timeline", "mcp", "memory", "postgres", "owntracks"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+# psycopg and nothing else. The geocoder, the HTTP endpoint and the JSON-RPC server are all
+# standard library: a location archive is the wrong place to be carrying a dependency tree.
+dependencies = ["psycopg[binary]>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/michelgrolet/tars-location-mcp"
+Issues = "https://github.com/michelgrolet/tars-location-mcp/issues"
+
+[project.scripts]
+tars-location = "tars_location.cli:main"
+tars-location-mcp = "tars_location.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tars_location"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# UP031 wants f-strings in place of %-formatting. Almost every string in this package sits next
+# to a psycopg query, where `%s` is a bound parameter and an f-string is an injection. Keeping
+# one formatting style across the file is what makes the difference visible at a glance.
+ignore = ["UP031"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

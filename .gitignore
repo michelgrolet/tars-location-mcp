@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+
+# Nothing that could carry a connection string, a token, or a position.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets/
+*.json.gz
+location-history*.json
+Takeout/

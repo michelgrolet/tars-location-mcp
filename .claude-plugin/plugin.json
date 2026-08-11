@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "location-memory",
+  "version": "0.1.0",
+  "description": "A private location archive that gives your agent durable memory of where you have been. MCP tools for stays, cities, countries, trips, journeys and records, plus skills that check the archive before answering and say when a silence is a gap rather than an absence.",
+  "author": {
+    "name": "Michel Grolet",
+    "url": "https://github.com/michelgrolet"
+  },
+  "homepage": "https://github.com/michelgrolet/tars-location-mcp",
+  "repository": "https://github.com/michelgrolet/tars-location-mcp",
+  "license": "MIT",
+  "keywords": ["location", "timeline", "trips", "memory", "mcp", "postgres", "owntracks"],
+  "skills": ["./skills"],
+  "mcpServers": {
+    "location": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/michelgrolet/tars-location-mcp", "tars-location-mcp"]
+    }
+  }
+}
