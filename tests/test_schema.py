@@ -299,3 +299,133 @@ class TestServerDegradesWithoutTheBridge:
         out = server.run_tool("location_coverage", {})
         assert out["gaps"] and "gap" in out["note"]
         assert out["gaps"][0]["missing_days"] > 60
+
+
+PEOPLE_DDL = ('create table people (id bigserial primary key, full_name text, '
+              'current_org text, "current_role" text)')
+
+
+def _bridge(names):
+    with core.db().connection() as conn:
+        conn.execute(PEOPLE_DDL)
+        conn.execute("insert into people (full_name) values ('A Friend'), ('A Friend Of Hers')")
+        for name in names:
+            conn.execute((MIGRATIONS / name).read_text())
+
+
+class TestCompanions:
+    """The window someone draws by hand, against the archive that says where it landed."""
+
+    def test_a_day_window_is_anchored_where_they_stood(self, archive):
+        """The whole point of the wall-clock contract. `2025-03-01` typed anywhere means
+        midnight in Paris for days spent in Paris, and the client is never asked to know that.
+        Paris is UTC+1 in March, so a UTC reading would put the window an hour out at both
+        ends and hand the 28th of February a day it never had."""
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        from tars_location import server
+        out = server.run_tool("record_together",
+                              {"person": "A Friend Of", "since": "2025-03-01",
+                               "until": "2025-03-03", "note": "a weekend"})
+        assert out["written"] is True
+        row = core.db().fetch_one("select * from location_companions")
+        assert core.iso(row["started_at"]) == "2025-02-28T23:00:00+00:00"
+        assert core.iso(row["ended_at"]) == "2025-03-03T23:00:00+00:00"
+        assert row["tz"] == "Europe/Paris" and row["has_time"] is False
+        assert out["window"]["days"] == 3
+
+    def test_where_is_derived_and_never_typed(self, archive):
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        from tars_location import server
+        server.run_tool("record_together", {"person": "A Friend Of", "since": "2025-03-11",
+                                            "until": "2025-03-13"})
+        out = server.run_tool("with_me", {"person": "A Friend Of"})
+        assert out["windows"][0]["cities"] == ["Lisbon"]
+        assert out["windows"][0]["days"] == 3
+        assert out["places"][0]["city"] == "Lisbon" and out["places"][0]["days"] == 3
+
+    def test_days_are_counted_on_days_not_on_rows(self, archive):
+        """One imported visit can cover a whole week in a single row. Counting stays answered
+        one day for a seven-day stay, and every 'time together' number was wrong."""
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        core.execute(
+            "insert into location_visits (started_at, ended_at, start_offset_m, lat, lon, "
+            "place_id) values (%s, %s, 0, 0.1, 0.1, %s)",
+            (datetime(2025, 5, 1, 8, tzinfo=UTC), datetime(2025, 5, 8, 8, tzinfo=UTC),
+             archive["away"]["id"]))
+        from tars_location import server
+        server.run_tool("record_together", {"person": "A Friend Of", "since": "2025-05-01",
+                                            "until": "2025-05-07"})
+        out = server.run_tool("with_me", {"person": "A Friend Of"})
+        assert out["windows"][0]["days_with_evidence"] == 7
+
+    def test_the_same_hours_cannot_be_recorded_twice(self, archive):
+        """A double click on an add button is otherwise a silent duplicate, and every count
+        downstream doubles."""
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        from tars_location import server
+        args = {"person": "A Friend Of", "since": "2025-03-11", "until": "2025-03-13"}
+        assert server.run_tool("record_together", args)["written"] is True
+        again = server.run_tool("record_together", args)
+        assert again["written"] is False and "already" in again["note"]
+
+    def test_two_matching_names_are_a_question_not_a_coin_toss(self, archive):
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        from tars_location import server
+        out = server.run_tool("record_together", {"person": "A Friend", "since": "2025-03-11"})
+        assert out["found"] is False and len(out["candidates"]) == 2
+        assert core.db().fetch_one("select count(*) as n from location_companions")["n"] == 0
+
+    def test_a_window_over_a_trip_reads_as_a_trip_companion(self, archive):
+        """The two ways of linking a person to a trip are one fact told twice, so both come
+        back from the same view with `via` saying which wrote it."""
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        core.db().fetch_one("select * from location_detect_trips(1)")
+        from tars_location import server
+        server.run_tool("record_together", {"person": "A Friend Of", "since": "2025-03-11",
+                                            "until": "2025-03-13"})
+        slug = core.db().fetch_one("select slug from location_trips")["slug"]
+        out = server.run_tool("who_was_there", {"trip": slug})
+        assert [p["full_name"] for p in out["people"]] == ["A Friend Of Hers"]
+        assert out["people"][0]["via"] == "range"
+
+    def test_an_explicit_tag_wins_over_a_window(self, archive):
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        core.db().fetch_one("select * from location_detect_trips(1)")
+        from tars_location import server
+        server.run_tool("record_together", {"person": "A Friend Of", "since": "2025-03-11",
+                                            "until": "2025-03-13"})
+        core.execute("insert into location_trip_people (trip_id, person_id, role) "
+                     "select t.id, p.id, 'partner' from location_trips t, people p "
+                     "where p.full_name = 'A Friend Of Hers'")
+        out = server.run_tool("who_was_there",
+                              {"trip": core.db().fetch_one(
+                                  "select slug from location_trips")["slug"]})
+        assert len(out["people"]) == 1
+        assert out["people"][0]["role"] == "partner" and out["people"][0]["via"] == "trip"
+
+    def test_the_bridge_still_answers_on_0002_alone(self, archive):
+        """An install that stopped at the trip bridge is supported: who_was_there must not
+        select a column that only 0003 creates."""
+        _bridge(["0002_people_bridge.sql"])
+        core.db().fetch_one("select * from location_detect_trips(1)")
+        core.execute("insert into location_trip_people (trip_id, person_id) "
+                     "select t.id, p.id from location_trips t, people p limit 1")
+        from tars_location import server
+        out = server.run_tool("who_was_there", {})
+        assert out["pairings"] and "via" not in out["pairings"][0]
+        missing = server.run_tool("with_me", {"person": "A Friend"})
+        assert missing["available"] is False and "0003_companions" in missing["note"]
+
+    def test_it_refuses_to_install_before_the_trip_bridge(self, archive):
+        with pytest.raises(Exception, match="0002"):
+            with core.db().connection() as conn:
+                conn.execute(PEOPLE_DDL)
+                conn.execute((MIGRATIONS / "0003_companions.sql").read_text())
+
+    def test_it_is_idempotent(self, archive):
+        _bridge(["0002_people_bridge.sql", "0003_companions.sql"])
+        from tars_location import server
+        server.run_tool("record_together", {"person": "A Friend Of", "since": "2025-03-11"})
+        with core.db().connection() as conn:
+            conn.execute((MIGRATIONS / "0003_companions.sql").read_text())
+        assert core.db().fetch_one("select count(*) as n from location_companions")["n"] == 1

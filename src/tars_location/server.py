@@ -136,10 +136,42 @@ TOOLS = [
         "name": "who_was_there",
         "description": ("The link between trips and a people graph, both ways. Pass `person` "
                         "for the trips shared with them, `trip` for everyone tagged on it, "
-                        "neither for every tagged pairing. Needs the optional people bridge."),
+                        "neither for every tagged pairing. `via` says how the link was made: "
+                        "'trip' for a tag on the trip, 'range' for a window that covers it. "
+                        "Needs the optional people bridge."),
         "inputSchema": {"type": "object", "properties": {
             "person": {"type": "string", "description": "A person's name, partial is fine."},
             "trip": {"type": "string", "description": "A trip slug."}}},
+    },
+    {
+        "name": "with_me",
+        "description": ("Days spent with someone, and where those days landed. Reads the "
+                        "windows recorded by `record_together` against the archive: cities, "
+                        "countries, how long, and the trip each window falls in. Pass no "
+                        "`person` for every window. Needs migrations/0003_companions.sql."),
+        "inputSchema": {"type": "object", "properties": {
+            "person": {"type": "string", "description": "A person's name, partial is fine."},
+            "since": SINCE_ARG, "until": UNTIL_ARG}},
+    },
+    {
+        "name": "record_together",
+        "description": ("Record that someone was with them over a date range, times optional. "
+                        "Use it whenever a conversation says who they were with and when — a "
+                        "weekend, an evening, a week at a friend's — including for spans the "
+                        "archive never detected as a trip. Never write where: the archive "
+                        "answers that. Needs migrations/0003_companions.sql."),
+        "inputSchema": {"type": "object", "properties": {
+            "person": {"type": "string",
+                       "description": "A person's name. It must resolve to exactly one."},
+            "since": {"type": "string", "description": "First day, YYYY-MM-DD."},
+            "until": {"type": "string",
+                      "description": "Last day, YYYY-MM-DD, inclusive. Default the first day."},
+            "from_time": {"type": "string",
+                          "description": "HH:MM local, only for a window inside a day."},
+            "to_time": {"type": "string",
+                        "description": "HH:MM local. Give both times, or neither."},
+            "note": {"type": "string", "description": "What it was, in a few words."}},
+            "required": ["person", "since"]},
     },
     {
         "name": "day",
@@ -192,7 +224,9 @@ TOOLS = [
                         "location_m_day_home (one row per day with the anchor place and km "
                         "from home), location_v_records, location_v_home_periods. With the "
                         "people bridge installed: location_trip_people, "
-                        "location_v_trip_people, people_v_trips."),
+                        "location_v_trip_people, people_v_trips, location_companions, "
+                        "location_v_companions, location_v_companion_days, "
+                        "people_v_together_places."),
         "inputSchema": {"type": "object", "properties": {
             "query": {"type": "string", "description": "A single SELECT statement."},
             "limit": {"type": "number", "description": "Row cap. Default 200."}},
@@ -286,6 +320,19 @@ NO_BRIDGE = {
     "available": False,
     "note": ("no people bridge in this database. Run migrations/0002_people_bridge.sql "
              "against a database that also holds a people graph to link trips to people."),
+}
+
+
+def _has_companions() -> bool:
+    row = core.db().fetch_one("select to_regclass('public.location_companions') as v")
+    return bool(row and row["v"])
+
+
+NO_COMPANIONS = {
+    "available": False,
+    "note": ("no companion windows in this database. Run migrations/0003_companions.sql, "
+             "the second half of the people bridge, to record who was with them over a "
+             "date range."),
 }
 
 
@@ -447,6 +494,12 @@ def run_tool(name, arguments):
 
     if name == "who_was_there":
         return _who_was_there(args)
+
+    if name == "with_me":
+        return _with_me(args)
+
+    if name == "record_together":
+        return _record_together(args)
 
     if name == "day":
         return _day(args)
@@ -717,24 +770,114 @@ def _trip_detail(trip):
             "journeys": [_journey_out(leg) for leg in legs if (leg.get("distance_m") or 0) > 3000]}
 
 
+def _like(name):
+    return "%%%s%%" % name.replace("%", "")
+
+
+def _resolve_person(name):
+    """One person or nothing. Two matches is a question for the user, never a coin toss."""
+    rows = core.db().fetch_all(
+        "select id, full_name, current_org from people where full_name ilike %s "
+        "order by full_name limit 6", (_like(name),))
+    if len(rows) == 1:
+        return rows[0], None
+    if not rows:
+        return None, {"found": False, "note": "nobody in the graph matches that name"}
+    return None, {"found": False, "candidates": [dict(r) for r in rows],
+                  "note": "several people match; say which one"}
+
+
+def _with_me(args):
+    if not _has_companions():
+        return dict(NO_COMPANIONS)
+    where, params = [], []
+    if args.get("person"):
+        where.append("full_name ilike %s")
+        params.append(_like(args["person"]))
+    if args.get("since"):
+        where.append("ended_at > %s")
+        params.append(args["since"])
+    if args.get("until"):
+        where.append("started_at < %s")
+        params.append(args["until"])
+    sql = ("select id, full_name, started_on, ended_on, days, has_time, tz, note, "
+           "countries, cities, places, days_with_evidence, trips "
+           "from location_v_companions")
+    if where:
+        sql += " where " + " and ".join(where)
+    windows = _rows(sql + " order by started_at desc", tuple(params))
+
+    place_sql = ("select full_name, country, city, days, seconds, first_day, last_day "
+                 "from people_v_together_places")
+    place_params = ()
+    if args.get("person"):
+        place_sql += " where full_name ilike %s"
+        place_params = (_like(args["person"]),)
+    places = [dict(r, duration=core.humanize(r["seconds"] or 0))
+              for r in _rows(place_sql + " order by seconds desc limit 60", place_params)]
+    return {"windows": windows, "places": places,
+            "note": ("where is read from the archive, never typed: a window over a gap in it "
+                     "has days but no city")}
+
+
+def _record_together(args):
+    if not _has_companions():
+        return dict(NO_COMPANIONS)
+    person, problem = _resolve_person(args["person"])
+    if problem:
+        return problem
+    d0 = args["since"]
+    d1 = args.get("until") or d0
+    t0, t1 = args.get("from_time"), args.get("to_time")
+    if bool(t0) != bool(t1):
+        return {"written": False, "note": "give both times, or neither"}
+    if d1 < d0:
+        return {"written": False, "note": "the end is before the start"}
+    # Wall clock with no tz, which is the contract the table's trigger reads: it re-anchors both
+    # ends in the timezone they were standing in that day, so nothing here has to know where
+    # that was. A whole-day window is half-open, ending at midnight after the last day.
+    if t0:
+        start, end = "%sT%s:00Z" % (d0, t0), "%sT%s:00Z" % (d1, t1)
+    else:
+        start = "%sT00:00:00Z" % d0
+        end = "%sT00:00:00Z" % (datetime.fromisoformat(d1).date() + timedelta(days=1))
+    try:
+        core.execute(
+            "insert into location_companions (person_id, started_at, ended_at, has_time, "
+            "note, source) values (%s, %s, %s, %s, %s, 'agent')",
+            (person["id"], start, end, bool(t0), args.get("note") or ""))
+    except Exception as exc:                                  # noqa: BLE001
+        if "location_companions_no_overlap" in str(exc):
+            return {"written": False,
+                    "note": "%s already has a window over those hours" % person["full_name"]}
+        raise
+    back = _rows("select started_on, ended_on, days, cities, countries, trips, tz "
+                 "from location_v_companions where person_id = %s "
+                 "order by created_at desc limit 1", (person["id"],))
+    return {"written": True, "person": person["full_name"],
+            "window": back[0] if back else None}
+
+
 def _who_was_there(args):
     if not _has_people_bridge():
         return dict(NO_BRIDGE)
+    # `via` only exists once 0003 has run, and a bridge stuck on 0002 is a supported install.
+    via = ", via" if _has_companions() else ""
     if args.get("person"):
         rows = _rows(
             "select full_name, trip_name, slug, started_at, ended_at, nights, primary_country, "
-            "role, note from people_v_trips where full_name ilike %s order by started_at desc",
-            ("%%%s%%" % args["person"].replace("%", ""),))
+            "role, note" + via + " from people_v_trips where full_name ilike %s "
+            "order by started_at desc", (_like(args["person"]),))
         return {"person": args["person"], "trips": rows,
-                "note": "tagged trips only; a trip nobody is tagged on says nothing either way"}
+                "note": "linked trips only; a trip nobody is linked to says nothing either way"}
     if args.get("trip"):
-        rows = _rows("select full_name, role, note, current_org, job_title "
-                     "from location_v_trip_people where slug = %s order by full_name",
+        rows = _rows("select full_name, role, note, current_org, job_title" + via +
+                     " from location_v_trip_people where slug = %s order by full_name",
                      (args["trip"],))
         return {"trip": args["trip"], "people": rows}
     return {"pairings": _rows(
-        "select trip_name, slug, started_at, full_name, role from location_v_trip_people "
-        "order by started_at desc")}
+        "select trip_name, slug, started_at, full_name, role" + via +
+        " from location_v_trip_people order by started_at desc")}
 
 
 def _day(args):

@@ -29,7 +29,7 @@ def cmd_migrate(args) -> int:
     """Run the SQL files in order. Every one is idempotent, so this is safe to repeat."""
     names = ["0001_core.sql"]
     if args.with_people_bridge:
-        names.append("0002_people_bridge.sql")
+        names += ["0002_people_bridge.sql", "0003_companions.sql"]
     with core.db().connection() as conn:
         for name in names:
             path = MIGRATIONS / name
@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("migrate", help="create or update the schema")
     p.add_argument("--with-people-bridge", action="store_true",
-                   help="also link trips to a people graph in the same database")
+                   help="also link trips and dated windows to a people graph in the same database")
     p.set_defaults(run=cmd_migrate)
 
     p = sub.add_parser("status", help="what the archive holds, and where the gaps are")

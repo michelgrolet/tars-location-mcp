@@ -137,6 +137,8 @@ What that adds over the plain MCP server is *when* the tools fire: TARS puts the
 | `home` | where you have lived and when |
 | `location_coverage` | what the archive holds, per source, and every gap |
 | `who_was_there` | trips shared with a person, both directions. Needs the people bridge |
+| `with_me` | days spent with someone and where they landed, trip or not. Needs the people bridge |
+| `record_together` | log that someone was with you over a date range, times optional. Needs the people bridge |
 | `location_sql` | read-only SELECT for anything the rest does not shape |
 | `will_it_rain` | the chance of rain where you are, counted over ~120 ensemble members |
 | `weather_now` | what it is doing outside right now, and the next twelve hours |
@@ -191,6 +193,18 @@ tars-location migrate --with-people-bridge
 ```
 
 It refuses to run unless a `people` table exists, and the core schema never references one. Built against [people-memory](https://github.com/michelgrolet/people-memory-mcp); any table with `id`, `full_name`, `current_org` and `current_role` works. Without the bridge, `who_was_there` says so plainly rather than returning a database error for an agent to misread.
+
+Half of "who was I with" is not on a trip, though. A weekend at a friend's, an evening, a week at your parents' are none of them runs of nights far from home, so the archive never detects them. `record_together` is the other half: a window you draw yourself on a person, with times optional.
+
+```
+you: I was in Lisbon with Ana from the 11th to the 13th
+
+    record_together(person="Ana", since="2025-03-11", until="2025-03-13")
+
+    3 days · Lisbon, Portugal · Lisbon — March 2025
+```
+
+Only who and when are stored. Cities, countries, days and the trip come from the archive at read time, so nothing about a place is ever written onto a person and nothing goes stale as the archive fills in. Dates with no clock time mean local midnights **where you were standing**, resolved from the archive itself: `2025-03-11` typed in Paris for a day spent in San Francisco means midnight in San Francisco, and the client is never asked to know that. `with_me` reads it back, and a window that covers a detected trip also shows up under `who_was_there` with `via: "range"` next to the people tagged on the trip by hand.
 
 ## Security
 

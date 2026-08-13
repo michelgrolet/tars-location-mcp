@@ -53,9 +53,9 @@ class Settings:
     read_only_row_cap: int
     # Weather. Open-Meteo is free for non-commercial use and needs no key, so these three
     # only ever have to be touched by someone who wants Fahrenheit or has bought a plan.
-    weather_units: str
-    weather_timeout_s: float
-    weather_api_key: str
+    weather_units: str = "metric"
+    weather_timeout_s: float = 15.0
+    weather_api_key: str = ""
 
     @classmethod
     def load(cls, env_file: str | None = None) -> Settings:
