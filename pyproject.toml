@@ -1,12 +1,12 @@
 [project]
 name = "tars-location-mcp"
 version = "0.1.0"
-description = "A private location archive with an MCP server: where you were, when, for how long, and who with."
+description = "A private location archive with an MCP server: where you were, when, for how long, who with, and what the weather was doing."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Michel Grolet", email = "michelgrolet@users.noreply.github.com" }]
-keywords = ["location", "timeline", "mcp", "memory", "postgres", "owntracks"]
+keywords = ["location", "timeline", "mcp", "memory", "postgres", "owntracks", "weather", "forecast"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: End Users/Desktop",

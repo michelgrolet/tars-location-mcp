@@ -138,8 +138,39 @@ What that adds over the plain MCP server is *when* the tools fire: TARS puts the
 | `location_coverage` | what the archive holds, per source, and every gap |
 | `who_was_there` | trips shared with a person, both directions. Needs the people bridge |
 | `location_sql` | read-only SELECT for anything the rest does not shape |
+| `will_it_rain` | the chance of rain where you are, counted over ~120 ensemble members |
+| `weather_now` | what it is doing outside right now, and the next twelve hours |
+| `weather_forecast` | the days ahead: highs, rain, wind, UV, sunrise |
+| `weather_models` | the same forecast from seven national weather services, side by side |
+| `weather_history` | what the weather actually was on a past day, at the place you spent it |
 
 Every windowed answer carries the period and timezone it used, and the number of stays it looked at. An answer that does not say what it covers is not an answer.
+
+## Weather, at coordinates it already has
+
+An agent that knows where you are can answer the weather question you actually asked. Not *what is the forecast for 48.89, 2.28* — **will it rain here today**, and on day four of the trip, and was it raining that Tuesday in Lisbon. The archive supplies the position, so none of these need one.
+
+```
+you: will it rain today?
+
+    will_it_rain()
+
+    62 %, likely. 1.4 mm expected, wettest around 17:00.
+    Dry from 09:00 to 14:00.
+    ECMWF 71 %, DWD 66 %, NOAA 49 % — 122 members, they broadly agree.
+```
+
+Three things this does that a weather widget does not:
+
+**A chance of rain is counted, not read off.** A single forecast cannot produce a probability. Three centres each run their model dozens of times from slightly perturbed starting states, and the share of those runs that ends up wet *is* the chance of rain. `will_it_rain` reads all ~120 members from ECMWF's ENS, DWD's ICON-EPS and NOAA's GEFS and counts them. Each centre is weighted equally rather than each member, or ECMWF's 51 members would outvote GEFS's 31 on nothing but ensemble size.
+
+**Disagreement is reported rather than averaged away.** When the three centres land within 15 points, the number is worth trusting. When they do not, the answer says so, because a confident 40 % and a coin-flip 40 % should not read the same. `weather_models` is the same idea one level down: the deterministic run from seven independent services — ECMWF, NOAA, DWD, Météo-France, the Met Office, Environment Canada, JMA — with their spread.
+
+**"Best models" means independent centres, not a longer list.** Each `_seamless` model chains that centre's own high-resolution regional model over its domain into its global one outside it: in France Météo-France is AROME at 1.3 km, over the US NOAA is HRRR at 3 km. Models that are *only* regional with someone else's global run behind them are deliberately left out — outside their domain they return ECMWF again, and a panel that counts the same forecast twice reports agreement it has not got.
+
+Everything goes through [Open-Meteo](https://open-meteo.com), free for non-commercial use and no key required. `LOCATION_WEATHER_API_KEY` switches to their commercial endpoints if you have a plan; `LOCATION_WEATHER_UNITS=imperial` switches the whole thing to °F, mph and inches.
+
+Any of the five takes a `place` (matched against your own archive first, so a place you have been resolves to the spot you stood on rather than the centroid of the city) or a `lat`/`lon` pair. With neither, the question is about where you are, which is what it almost always is.
 
 ## Trips are detected, not entered
 

@@ -11,6 +11,11 @@ from `location_v_stays`, which reads the start and end an export recorded rather
 interpolating between fixes. **Every answer says what it covers**, because an archive
 assembled from an export plus a live feed has holes, and "you were never there" and "nothing
 was recorded then" are not the same sentence.
+
+The weather tools obey the same two rules. They read the coordinates out of the archive
+instead of asking, and every answer says which position it used and how that was decided,
+because a forecast for the wrong town reads exactly like a wrong forecast. A chance of rain
+is counted over ensemble members rather than lifted off one model's output.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from datetime import datetime, timedelta
 from datetime import timezone as _tz
 from zoneinfo import ZoneInfo
 
-from . import core
+from . import core, weather
 
 DEFAULT_PROTOCOL = "2025-06-18"
 SERVER_INFO = {"name": "location", "version": "0.1.0"}
@@ -37,6 +42,17 @@ SINCE_ARG = {"type": "string", "description": "Start, YYYY-MM-DD or an ISO times
 UNTIL_ARG = {"type": "string", "description": "End, exclusive. YYYY-MM-DD or ISO timestamp."}
 COUNTRY_ARG = {"type": "string", "description": "Filter to one country, name or ISO code."}
 CITY_ARG = {"type": "string", "description": "Filter to one city, by name."}
+
+# Every weather tool takes the same three, and all three are optional: with none of them the
+# question is about where the user is right now, which is what it almost always is.
+WHERE_ARGS = {
+    "place": {"type": "string",
+              "description": ("Somewhere other than where they are now. Matched against the "
+                              "archive first, so a place they have been resolves to the spot "
+                              "they stood on; anywhere else is geocoded by name.")},
+    "lat": {"type": "number", "description": "Latitude, if you already have coordinates."},
+    "lon": {"type": "number", "description": "Longitude, with lat."},
+}
 
 
 TOOLS = [
@@ -181,6 +197,68 @@ TOOLS = [
             "query": {"type": "string", "description": "A single SELECT statement."},
             "limit": {"type": "number", "description": "Row cap. Default 200."}},
             "required": ["query"]},
+    },
+    {
+        "name": "will_it_rain",
+        "description": ("The chance of rain where they are, counted over about 120 ensemble "
+                        "members from ECMWF, DWD and NOAA rather than read off one forecast. "
+                        "Returns the percentage hour by hour, how much rain to expect, the "
+                        "longest dry stretch, and whether the three centres agree. Default "
+                        "window is the rest of today. Use this for anything phrased as a "
+                        "chance, a risk or 'should I take an umbrella'."),
+        "inputSchema": {"type": "object", "properties": {
+            **WHERE_ARGS,
+            "date": {"type": "string",
+                     "description": "A whole local day, YYYY-MM-DD, up to about 4 days out. "
+                                    "Default is the rest of today."},
+            "hours": {"type": "number",
+                      "description": "The next N hours instead of a calendar day."},
+            "threshold": {"type": "number",
+                          "description": "What counts as rain, as a total over the window, in "
+                                         "the same unit as the answer. Default 0.2 mm."}}},
+    },
+    {
+        "name": "weather_now",
+        "description": ("What it is doing outside right now where they are: sky, "
+                        "temperature, what it feels like, wind and gusts, humidity, "
+                        "pressure, sunrise and sunset, plus the next twelve hours. Read this "
+                        "before saying anything about their weather."),
+        "inputSchema": {"type": "object", "properties": dict(WHERE_ARGS)},
+    },
+    {
+        "name": "weather_forecast",
+        "description": ("The days ahead where they are: high and low, rain and how long it "
+                        "lasts, chance of rain, wind, UV, sunrise and sunset, one row per "
+                        "day. Use for 'what is the weekend looking like'."),
+        "inputSchema": {"type": "object", "properties": {
+            **WHERE_ARGS,
+            "days": {"type": "number", "description": "How many days, 1 to 16. Default 7."}}},
+    },
+    {
+        "name": "weather_models",
+        "description": ("The same forecast from seven independent national weather services "
+                        "side by side — ECMWF, NOAA, DWD, Météo-France, the Met Office, "
+                        "Environment Canada and JMA — with their spread and which of them "
+                        "actually cover this point. Use when the question is how reliable "
+                        "the forecast is, or when two sources disagree."),
+        "inputSchema": {"type": "object", "properties": {
+            **WHERE_ARGS,
+            "variable": {"type": "string",
+                         "enum": ["precipitation", "temperature_2m", "wind_speed_10m",
+                                  "cloud_cover", "relative_humidity_2m"],
+                         "description": "What to compare. Default precipitation."},
+            "hours": {"type": "number", "description": "Window from now. Default 24."}}},
+    },
+    {
+        "name": "weather_history",
+        "description": ("What the weather actually was on a past day, from the ERA5 "
+                        "reanalysis, at the place they spent that day — the archive supplies "
+                        "the coordinates, so 'was it raining in Lisbon that Tuesday' needs "
+                        "only the date. Lags real time by about five days."),
+        "inputSchema": {"type": "object", "properties": {
+            **WHERE_ARGS,
+            "date": {"type": "string", "description": "YYYY-MM-DD."}},
+            "required": ["date"]},
     },
 ]
 
@@ -400,7 +478,111 @@ def run_tool(name, arguments):
         rows = core.db().fetch_read_only(args.get("query") or "", limit)
         return {"rows": [{k: core.iso(v) for k, v in row.items()} for row in rows]}
 
+    if name in ("will_it_rain", "weather_now", "weather_forecast", "weather_models",
+                "weather_history"):
+        return _weather(name, args)
+
     raise RuntimeError("unknown tool: %s" % name)
+
+
+def _place_in_archive(search):
+    """The place in the archive that best matches a name, or None.
+
+    Most time spent wins, not most recent and not shortest string: "Lisbon" should land on
+    the flat they slept in for three weeks rather than on the airport they passed through
+    once, and both carry the city in their address.
+    """
+    pattern = "%%%s%%" % str(search).replace("%", "")
+    row = core.db().fetch_one(
+        "select label, address, city, country, avg(lat) as lat, avg(lon) as lon, "
+        "sum(seconds) as seconds from location_v_stays "
+        "where lat is not null and (label ilike %s or address ilike %s or city ilike %s) "
+        "group by label, address, city, country order by sum(seconds) desc limit 1",
+        (pattern, pattern, pattern))
+    return row if row and row.get("lat") is not None else None
+
+
+def _where(args, date=None):
+    """Which coordinates a weather question is about, and how that was decided.
+
+    Four sources, in order of how much they know: coordinates the caller passed, a place name
+    resolved against the archive and then against a geocoder, the place they spent a given
+    past day at, and finally the last fix. The answer always carries which one it used —
+    a forecast for the wrong town is indistinguishable from a wrong forecast.
+    """
+    if args.get("lat") is not None and args.get("lon") is not None:
+        return {"lat": float(args["lat"]), "lon": float(args["lon"]), "source": "given"}
+
+    if args.get("place"):
+        hit = _place_in_archive(args["place"])
+        if hit:
+            return {"lat": float(hit["lat"]), "lon": float(hit["lon"]),
+                    "place": hit.get("label") or hit.get("address"), "city": hit.get("city"),
+                    "country": hit.get("country"), "source": "matched in the archive"}
+        geo = weather.geocode(args["place"], core.settings())
+        if not geo:
+            raise ValueError("cannot find %r, in the archive or by name. Pass lat and lon."
+                             % args["place"])
+        return {"lat": geo["lat"], "lon": geo["lon"], "place": geo["place"],
+                "source": "geocoded by name"}
+
+    if date:
+        # Where the day was actually spent, which is the whole point of asking a location
+        # archive about past weather: the longest stay that day, not the first fix of it.
+        lo = datetime.fromisoformat(str(date)[:10]).replace(tzinfo=_tz.utc) - timedelta(hours=14)
+        rows = [r for r in core.stay_rows(lo, lo + timedelta(hours=38), limit=MAX_ROWS)
+                if str(date)[:10] in core.days_touched(r) and r.get("lat") is not None]
+        if rows:
+            stay = max(rows, key=lambda r: float(r.get("seconds") or 0))
+            return {"lat": float(stay["lat"]), "lon": float(stay["lon"]),
+                    "place": stay.get("label") or stay.get("address"), "city": stay.get("city"),
+                    "country": stay.get("country"),
+                    "source": "where they spent %s" % str(date)[:10]}
+
+    ping = core.latest_ping()
+    if not ping:
+        raise ValueError("no position in the archive, so there is nowhere to forecast. "
+                         "Pass a place, or lat and lon.")
+    stamp = ping.get("captured_at") or ping.get("created_at")
+    age = (datetime.now(_tz.utc) - stamp).total_seconds()
+    out = {"lat": round(ping["lat"], 5), "lon": round(ping["lon"], 5),
+           "place": ping.get("address"), "city": ping.get("city"),
+           "country": ping.get("country"), "source": "their last fix, %s old" % core.humanize(age)}
+    if age > 86400:
+        # A day-old fix can be a country away, and a forecast for where they were yesterday
+        # reads exactly like a forecast for where they are.
+        out["stale"] = True
+    return out
+
+
+def _weather(name, args):
+    settings = core.settings()
+    spot = _where(args, date=args.get("date") if name == "weather_history" else None)
+    coords = (spot["lat"], spot["lon"])
+    try:
+        if name == "will_it_rain":
+            body = weather.rain_outlook(*coords, date=args.get("date"),
+                                        hours=args.get("hours"),
+                                        threshold=args.get("threshold"), settings=settings)
+        elif name == "weather_now":
+            body = weather.conditions(*coords, settings=settings)
+        elif name == "weather_forecast":
+            body = weather.daily(*coords, days=int(args.get("days") or 7), settings=settings)
+        elif name == "weather_models":
+            body = weather.model_panel(*coords, variable=args.get("variable") or "precipitation",
+                                       hours=int(args.get("hours") or 24), settings=settings)
+        else:
+            body = weather.history(*coords, date=args["date"], settings=settings)
+    except weather.WeatherError as err:
+        return {"where": spot, "found": False, "error": str(err)}
+    if name == "weather_history" and spot["source"].startswith("their last fix"):
+        # The whole point of asking the archive about past weather is that it knows where the
+        # day was spent. When it does not, saying so beats reporting the weather of wherever
+        # they happen to be standing today as if it were that day's.
+        spot["note"] = ("nothing recorded on that date, so this is the weather at their "
+                        "current position, not at wherever they actually were. Check "
+                        "location_coverage.")
+    return {"where": spot, **body}
 
 
 def _current_location():

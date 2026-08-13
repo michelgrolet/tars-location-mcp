@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Weather, at the coordinates the archive already holds. Five tools, all of which default to
+  where you are and take a `place` or a `lat`/`lon` pair instead: `will_it_rain`,
+  `weather_now`, `weather_forecast`, `weather_models`, `weather_history`.
+- A chance of rain is counted over about 120 ensemble members from ECMWF, DWD and NOAA rather
+  than read off one forecast, with each centre weighted equally so the one running the most
+  members does not decide the answer on its own. Their disagreement is reported instead of
+  averaged away.
+- `weather_models` puts seven independent national services side by side with their spread,
+  and reports a model that does not cover the point as not covering it rather than folding
+  its nulls into the mean as zeroes.
+- `weather_history` reads ERA5 through the place you spent that day, so a past-weather
+  question needs only a date. It says so plainly when the archive has no record of the day
+  and the answer therefore describes where you are now.
+- Open-Meteo throughout: free, no key, no new dependency. `LOCATION_WEATHER_UNITS`,
+  `LOCATION_WEATHER_TIMEOUT_S` and `LOCATION_WEATHER_API_KEY` are the only new settings, and
+  none of them has to be set.
+
 ## 0.1.0
 
 First public release. Extracted from a private archive that had been running for months, with everything personal removed and everything that was hardcoded now measured.

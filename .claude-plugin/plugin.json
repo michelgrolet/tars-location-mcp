@@ -2,7 +2,7 @@
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "location-memory",
   "version": "0.1.0",
-  "description": "A private location archive that gives your agent durable memory of where you have been. MCP tools for stays, cities, countries, trips, journeys and records, plus skills that check the archive before answering and say when a silence is a gap rather than an absence.",
+  "description": "A private location archive that gives your agent durable memory of where you have been, and the weather at those coordinates. MCP tools for stays, cities, countries, trips, journeys and records, plus a chance of rain counted over ~120 ensemble members from ECMWF, DWD and NOAA. The skills check the archive before answering and say when a silence is a gap rather than an absence.",
   "author": {
     "name": "Michel Grolet",
     "url": "https://github.com/michelgrolet"
@@ -10,7 +10,7 @@
   "homepage": "https://github.com/michelgrolet/tars-location-mcp",
   "repository": "https://github.com/michelgrolet/tars-location-mcp",
   "license": "MIT",
-  "keywords": ["location", "timeline", "trips", "memory", "mcp", "postgres", "owntracks"],
+  "keywords": ["location", "timeline", "trips", "weather", "forecast", "memory", "mcp", "postgres", "owntracks"],
   "skills": ["./skills"],
   "mcpServers": {
     "location": {

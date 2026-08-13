@@ -51,6 +51,11 @@ class Settings:
     # Nominatim allows one request per second, absolute. This is the pause after each call.
     geocode_sleep_s: float
     read_only_row_cap: int
+    # Weather. Open-Meteo is free for non-commercial use and needs no key, so these three
+    # only ever have to be touched by someone who wants Fahrenheit or has bought a plan.
+    weather_units: str
+    weather_timeout_s: float
+    weather_api_key: str
 
     @classmethod
     def load(cls, env_file: str | None = None) -> Settings:
@@ -69,6 +74,10 @@ class Settings:
             place_radius_m=float(os.environ.get("LOCATION_PLACE_RADIUS_M", "40")),
             geocode_sleep_s=float(os.environ.get("LOCATION_GEOCODE_SLEEP_S", "1.1")),
             read_only_row_cap=int(os.environ.get("LOCATION_READ_ONLY_ROW_CAP", "2000")),
+            weather_units=(os.environ.get("LOCATION_WEATHER_UNITS", "metric").strip().lower()
+                           or "metric"),
+            weather_timeout_s=float(os.environ.get("LOCATION_WEATHER_TIMEOUT_S", "15")),
+            weather_api_key=os.environ.get("LOCATION_WEATHER_API_KEY", "").strip(),
         )
 
     def user_agent(self) -> str:
